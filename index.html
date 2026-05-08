@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+<meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>血圧記録（IndexedDB/統計/カレンダー）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 16px; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    label { display: block; font-size: 12px; color: #555; margin-bottom: 4px; }
+    input, textarea, button, select { width: 100%; padding: 10px; box-sizing: border-box; font-size: 14px; }
+    textarea { resize: vertical; min-height: 42px; }
+    button { cursor: pointer; border: 0; border-radius: 8px; }
+    .primary { background: #2563eb; color: #fff; }
+    .danger { background: #dc2626; color: #fff; }
+    .muted { background: #e5e7eb; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    .list { margin-top: 16px; }
+    .item { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+    .top { display:flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+    .dt { font-size: 12px; color: #666; }
+    .bp { font-weight: 700; font-size: 16px; }
+    .meta { font-size: 12px; color: #444; margin-top: 6px; display:flex; gap: 12px; flex-wrap: wrap; }
+    .note { font-size: 12px; color: #555; margin-top: 6px; white-space: pre-wrap; }
+    .smallbtn { width: auto; padding: 8px 10px; border-radius: 8px; background: #f3f4f6; }
+    .status { margin-top: 10px; font-size: 12px; color: #0f766e; }
+    .warn { color: #b45309; }
+
+    /* ===== カレンダー集計 ===== */
+    .cal-wrap { margin-top: 12px; }
+    .cal-head { display:flex; align-items:center; justify-content: space-between; gap: 8px; }
+    .cal-head .cal-btns { display:flex; gap: 8px; }
+    .cal-btn { width:auto; padding: 8px 10px; border-radius: 8px; background:#f3f4f6; border:0; cursor:pointer; }
+
+    .cal-grid { margin-top: 10px; display:grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+    .cal-dow { font-size: 11px; color:#666; text-align:center; padding: 6px 0; }
+
+    .cal-cell {
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 8px;
+      min-height: 54px;
+      background: #fff;
+      position: relative;
+      cursor: pointer;
+    }
+    .cal-cell .day { font-size: 12px; color:#111; font-weight: 700; }
+    .cal-cell .count { font-size: 11px; color:#374151; margin-top: 6px; }
+
+    .cal-cell.is-empty { background: #f9fafb; border-style: dashed; color:#9ca3af; cursor: default; }
+    .cal-cell.has-data { background: #eff6ff; border-color:#bfdbfe; }
+    .cal-cell.today { outline: 2px solid #22c55e; outline-offset: 1px; }
+
+    .badge {
+      position:absolute; top:8px; right:8px;
+      font-size: 10px; background:#2563eb; color:#fff;
+      padding: 2px 6px; border-radius: 999px;
+    }
+
+    /* カレンダー：選択日の強調 */
+    .cal-cell.selected {
+      outline: 2px solid #2563eb;
+      outline-offset: 1px;
+      background: #dbeafe;
+    }
+  </style>
+</head>
+<body>
+  <h1>血圧記録（スマホ内保存：IndexedDB）</h1>
+
+  <div class="row">
+    <div>
+      <label>測定日時</label>
+      <input id="dt" type="datetime-local" />
+    </div>
+    <div>
+      <label>脈拍（任意）</label>
+      <input id="pulse" type="number" inputmode="numeric" min="0" placeholder="例：70" />
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:10px;">
+    <div>
+      <label>最高（上）</label>
+      <input id="sys" type="number" inputmode="numeric" min="0" placeholder="例：120" />
+    </div>
+    <div>
+      <label>最低（下）</label>
+      <input id="dia" type="number" inputmode="numeric" min="0" placeholder="例：80" />
+    </div>
+  </div>
+
+  <div style="margin-top:10px;">
+    <label>メモ（任意）</label>
+    <textarea id="note" placeholder="例：朝食前、少し運動後 など"></textarea>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="saveBtn">保存</button>
+    <button class="muted" id="reloadBtn">再読み込み</button>
+    <button class="danger" id="clearBtn" style="grid-column: 1 / -1;">全削除</button>
+  </div>
+
+  <!-- バックアップ（任意だけどおすすめ） -->
+  <div class="actions" style="margin-top:10px;">
+    <button class="muted" id="exportCsvBtn">CSVエクスポート</button>
+    <button class="muted" id="exportJsonBtn">JSONエクスポート</button>
+    <label class="muted" style="padding:10px;border-radius:8px;text-align:center;">
+      CSVインポート
+      <input id="importCsvInput" type="file" accept=".csv,text/csv" style="display:none;">
+    </label>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <!-- 全体統計 -->
+  <div id="stats" class="item" style="margin-top:12px;">
+    <div class="top">
+      <div>
+        <div class="bp">統計（全体）</div>
+        <div class="dt" id="statsSub">読み込み中…</div>
+      </div>
+    </div>
+    <div class="meta" id="statsMain"></div>
+    <div class="note" id="statsDetail" style="display:none;"></div>
+  </div>
+
+  <!-- 測定回数カレンダー -->
+  <div id="calendar" class="item cal-wrap">
+    <div class="cal-head">
+      <div>
+        <div class="bp">測定回数カレンダー</div>
+        <div class="dt" id="calSub">月別の測定回数（回/日）</div>
+      </div>
+      <div class="cal-btns">
+        <button class="cal-btn" id="calPrev">＜</button>
+        <button class="cal-btn" id="calToday">今月</button>
+        <button class="cal-btn" id="calNext">＞</button>
+      </div>
+    </div>
+
+    <div class="meta" style="margin-top:8px;">
+      <span id="calTitle">----</span>
+      <span id="calTotal">合計: - 回</span>
+      <span id="calActiveDays">測定日数: - 日</span>
+    </div>
+
+    <div class="cal-grid" id="calDow"></div>
+    <div class="cal-grid" id="calGrid"></div>
+  </div>
+
+  <!-- 当日フィルター -->
+  <div id="dayFilterBar" class="item" style="display:none; margin-top:12px;">
+    <div class="top">
+      <div>
+        <div class="bp">当日フィルター</div>
+        <div class="dt" id="dayFilterText"></div>
+      </div>
+      <button class="smallbtn" id="dayFilterClear">解除</button>
+    </div>
+
+    <!-- 当日統計（A2） -->
+    <div class="meta" id="dayStatsMain" style="margin-top:10px;"></div>
+    <div class="note" id="dayStatsDetail" style="display:none;"></div>
+  </div>
+
+  <div class="list" id="list"></div>
+
+<script>
+/** =========================================================
+ *  IndexedDB 最小実装
+ * ========================================================= */
+const DB_NAME = "bp_db";
+const DB_VERSION = 1;
+const STORE = "readings";
+
+let db;
+
+/** =========================================================
+ *  状態表示
+ * ========================================================= */
+function setStatus(msg, isWarn=false) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = "status" + (isWarn ? " warn" : "");
+}
+
+/** =========================================================
+ *  DB
+ * ========================================================= */
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+    req.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        const store = db.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
+        store.createIndex("byDate", "dt", { unique: false });
+      }
+    };
+
+    req.onsuccess = () => {
+      db = req.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function txStore(mode="readonly") {
+  const tx = db.transaction(STORE, mode);
+  return tx.objectStore(STORE);
+}
+
+function addReading(reading) {
+  return new Promise((resolve, reject) => {
+    const store = txStore("readwrite");
+    const req = store.add(reading);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function deleteReading(id) {
+  return new Promise((resolve, reject) => {
+    const store = txStore("readwrite");
+    const req = store.delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function clearAll() {
+  return new Promise((resolve, reject) => {
+    const store = txStore("readwrite");
+    const req = store.clear();
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function getAllReadings() {
+  return new Promise((resolve, reject) => {
+    const store = txStore("readonly");
+    const idx = store.index("byDate");
+    const req = idx.getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** =========================================================
+ *  Utility（日時/文字）
+ * ========================================================= */
+function pad2(n){ return String(n).padStart(2,"0"); }
+
+function toLocalDatetimeValue(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth()+1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function formatJP(dtStr) {
+  const d = new Date(dtStr);
+  if (isNaN(d)) return dtStr;
+  return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function escapeHtml(str){
+  return str.replace(/[&<>"']/g, s => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[s]));
+}
+
+/** =========================================================
+ *  入力/保存
+ * ========================================================= */
+function readForm() {
+  const dt = document.getElementById("dt").value;
+  const sys = Number(document.getElementById("sys").value);
+  const dia = Number(document.getElementById("dia").value);
+  const pulseVal = document.getElementById("pulse").value.trim();
+  const pulse = pulseVal === "" ? null : Number(pulseVal);
+  const note = document.getElementById("note").value.trim();
+
+  if (!dt) throw new Error("測定日時を入力してください");
+  if (!sys || !dia) throw new Error("最高（上）と最低（下）を入力してください");
+
+  return { dt, sys, dia, pulse, note, createdAt: Date.now() };
+}
+
+function resetFormKeepDate() {
+  document.getElementById("sys").value = "";
+  document.getElementById("dia").value = "";
+  document.getElementById("pulse").value = "";
+  document.getElementById("note").value = "";
+}
+
+/** =========================================================
+ *  統計（全体＆当日共通）
+ * ========================================================= */
+function isValidNumber(n) {
+  return typeof n === "number" && !Number.isNaN(n) && Number.isFinite(n);
+}
+function avg(arr) { if (arr.length === 0) return null; return arr.reduce((a,b)=>a+b,0) / arr.length; }
+function min(arr) { if (arr.length === 0) return null; return arr.reduce((m,v)=> v < m ? v : m, arr[0]); }
+function max(arr) { if (arr.length === 0) return null; return arr.reduce((m,v)=> v > m ? v : m, arr[0]); }
+
+function fmt1(n) { return (n === null) ? "-" : (Math.round(n * 10) / 10).toFixed(1); }
+function fmt0(n) { return (n === null) ? "-" : String(Math.round(n)); }
+
+function classifyTimeOfDay(dtStr) {
+  const d = new Date(dtStr);
+  const h = d.getHours();
+  if (h >= 4 && h <= 11) return "朝";
+  if (h >= 17 && h <= 23) return "夜";
+  return "その他";
+}
+
+function computeStats(items) {
+  const valid = items.filter(x => x && x.dt && isValidNumber(x.sys) && isValidNumber(x.dia));
+  const sys = valid.map(x => x.sys);
+  const dia = valid.map(x => x.dia);
+  const pulse = valid.map(x => x.pulse).filter(p => p !== null && isValidNumber(p));
+
+  const byTime = { "朝": [], "夜": [], "その他": [] };
+  for (const v of valid) byTime[classifyTimeOfDay(v.dt)].push(v);
+
+  const makeBlock = (arr) => {
+    const s = arr.map(x=>x.sys);
+    const d = arr.map(x=>x.dia);
+    const p = arr.map(x=>x.pulse).filter(p => p !== null && isValidNumber(p));
+    return {
+      count: arr.length,
+      sysAvg: avg(s), sysMin: min(s), sysMax: max(s),
+      diaAvg: avg(d), diaMin: min(d), diaMax: max(d),
+      pulseAvg: avg(p), pulseMin: min(p), pulseMax: max(p),
+    };
+  };
+
+  return {
+    count: valid.length,
+    sysAvg: avg(sys), sysMin: min(sys), sysMax: max(sys),
+    diaAvg: avg(dia), diaMin: min(dia), diaMax: max(dia),
+    pulseCount: pulse.length,
+    pulseAvg: avg(pulse), pulseMin: min(pulse), pulseMax: max(pulse),
+    byTime: {
+      morning: makeBlock(byTime["朝"]),
+      night: makeBlock(byTime["夜"]),
+      other: makeBlock(byTime["その他"]),
+    }
+  };
+}
+
+function renderStats(items) {
+  const sub = document.getElementById("statsSub");
+  const main = document.getElementById("statsMain");
+  const detail = document.getElementById("statsDetail");
+
+  if (!items || items.length === 0) {
+    sub.textContent = "データがありません";
+    main.innerHTML = "";
+    detail.style.display = "none";
+    return;
+  }
+
+  const st = computeStats(items);
+  sub.textContent = `対象 ${st.count} 件（脈拍データ ${st.pulseCount} 件）`;
+
+  main.innerHTML = `
+    <span>上(平均): ${fmt1(st.sysAvg)}</span>
+    <span>下(平均): ${fmt1(st.diaAvg)}</span>
+    <span>上(最小/最大): ${fmt0(st.sysMin)} / ${fmt0(st.sysMax)}</span>
+    <span>下(最小/最大): ${fmt0(st.diaMin)} / ${fmt0(st.diaMax)}</span>
+    ${st.pulseCount > 0 ? `<span>脈拍(平均): ${fmt1(st.pulseAvg)}</span>` : ""}
+  `;
+
+  const m = st.byTime.morning;
+  const n = st.byTime.night;
+  detail.style.display = "block";
+  detail.innerHTML = [
+    `【朝】${m.count}件  上: ${fmt1(m.sysAvg)} (min ${fmt0(m.sysMin)} / max ${fmt0(m.sysMax)})  下: ${fmt1(m.diaAvg)} (min ${fmt0(m.diaMin)} / max ${fmt0(m.diaMax)})`,
+    `【夜】${n.count}件  上: ${fmt1(n.sysAvg)} (min ${fmt0(n.sysMin)} / max ${fmt0(n.sysMax)})  下: ${fmt1(n.diaAvg)} (min ${fmt0(n.diaMin)} / max ${fmt0(n.diaMax)})`,
+  ].join("\n");
+}
+
+/** =========================================================
+ *  カレンダー集計 + 当日フィルター（A/A2）
+ * ========================================================= */
+let calMonth = null;           // Date(YYYY, MM, 1)
+let selectedDayKey = null;     // "YYYY-MM-DD" or null
+
+function ymdLocalFromDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function ymdLocalFromDtStr(dtStr) {
+  const d = new Date(dtStr);
+  return ymdLocalFromDate(d);
+}
+
+function monthTitle(d) {
+  return `${d.getFullYear()}年${d.getMonth() + 1}月`;
+}
+
+function buildCountMap(items) {
+  const map = new Map();
+  for (const it of items) {
+    if (!it?.dt) continue;
+    const key = ymdLocalFromDtStr(it.dt);
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return map;
+}
+
+function renderCalendar(items) {
+  const dowEl = document.getElementById("calDow");
+  const gridEl = document.getElementById("calGrid");
+  const titleEl = document.getElementById("calTitle");
+  const totalEl = document.getElementById("calTotal");
+  const activeEl = document.getElementById("calActiveDays");
+
+  if (!dowEl || !gridEl) return;
+
+  const now = new Date();
+  if (!calMonth) calMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  if (dowEl.childElementCount === 0) {
+    const dows = ["日","月","火","水","木","金","土"];
+    for (const w of dows) {
+      const div = document.createElement("div");
+      div.className = "cal-dow";
+      div.textContent = w;
+      dowEl.appendChild(div);
+    }
+  }
+
+  titleEl.textContent = monthTitle(calMonth);
+  const countMap = buildCountMap(items);
+
+  const y = calMonth.getFullYear();
+  const m = calMonth.getMonth();
+  const first = new Date(y, m, 1);
+  const firstDow = first.getDay();
+  const lastDay = new Date(y, m + 1, 0).getDate();
+
+  let monthTotal = 0;
+  let monthActiveDays = 0;
+  for (let d = 1; d <= lastDay; d++) {
+    const key = ymdLocalFromDate(new Date(y, m, d));
+    const c = countMap.get(key) || 0;
+    monthTotal += c;
+    if (c > 0) monthActiveDays += 1;
+  }
+  totalEl.textContent = `合計: ${monthTotal} 回`;
+  activeEl.textContent = `測定日数: ${monthActiveDays} 日`;
+
+  gridEl.innerHTML = "";
+  const todayKey = ymdLocalFromDate(now);
+
+  const weeks = 6;
+  const cells = weeks * 7;
+
+  for (let i = 0; i < cells; i++) {
+    const cell = document.createElement("div");
+    cell.className = "cal-cell";
+
+    const dayNum = i - firstDow + 1;
+
+    if (dayNum < 1 || dayNum > lastDay) {
+      cell.classList.add("is-empty");
+      cell.innerHTML = `<div class="day"> </div><div class="count"></div>`;
+      gridEl.appendChild(cell);
+      continue;
+    }
+
+    const date = new Date(y, m, dayNum);
+    const key = ymdLocalFromDate(date);
+    const c = countMap.get(key) || 0;
+
+    if (c > 0) cell.classList.add("has-data");
+    if (key === todayKey) cell.classList.add("today");
+    if (selectedDayKey === key) cell.classList.add("selected");
+
+    cell.innerHTML = `
+      <div class="day">${dayNum}</div>
+      <div class="count">${c > 0 ? `${c}回` : ""}</div>
+      ${c > 0 ? `<div class="badge">${c}</div>` : ""}
+    `;
+
+    cell.addEventListener("click", async () => {
+      if (selectedDayKey === key) {
+        selectedDayKey = null;
+        setStatus("当日フィルターを解除しました");
+      } else {
+        selectedDayKey = key;
+        setStatus(`${key} の記録を表示します`);
+      }
+      await loadAndRender();
+    });
+
+    gridEl.appendChild(cell);
+  }
+}
+
+function setupCalendarButtons() {
+  const prev = document.getElementById("calPrev");
+  const next = document.getElementById("calNext");
+  const today = document.getElementById("calToday");
+
+  if (!prev || !next || !today) return;
+
+  prev.addEventListener("click", async () => {
+    calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() - 1, 1);
+    await loadAndRender();
+    setStatus(`${monthTitle(calMonth)} を表示しました`);
+  });
+
+  next.addEventListener("click", async () => {
+    calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 1);
+    await loadAndRender();
+    setStatus(`${monthTitle(calMonth)} を表示しました`);
+  });
+
+  today.addEventListener("click", async () => {
+    const now = new Date();
+    calMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    await loadAndRender();
+    setStatus("今月を表示しました");
+  });
+}
+
+function applyDayFilter(items) {
+  if (!selectedDayKey) return items;
+  return items.filter(x => x?.dt && ymdLocalFromDtStr(x.dt) === selectedDayKey);
+}
+
+function updateDayFilterBar(filteredCount, totalCount) {
+  const bar = document.getElementById("dayFilterBar");
+  const text = document.getElementById("dayFilterText");
+  if (!bar || !text) return;
+
+  if (!selectedDayKey) {
+    bar.style.display = "none";
+    return;
+  }
+  bar.style.display = "block";
+  text.textContent = `${selectedDayKey} の記録を表示中（${filteredCount}/${totalCount} 件）`;
+}
+
+function renderDayStats(dayItems) {
+  const main = document.getElementById("dayStatsMain");
+  const detail = document.getElementById("dayStatsDetail");
+  if (!main || !detail) return;
+
+  if (!selectedDayKey) {
+    main.innerHTML = "";
+    detail.style.display = "none";
+    return;
+  }
+
+  if (!dayItems || dayItems.length === 0) {
+    main.innerHTML = `<span>${selectedDayKey} の記録がありません</span>`;
+    detail.style.display = "none";
+    return;
+  }
+
+  const st = computeStats(dayItems);
+
+  main.innerHTML = `
+    <span><b>当日統計</b>（${selectedDayKey} / ${st.count}件）</span>
+    <span>上(平均): ${fmt1(st.sysAvg)}</span>
+    <span>下(平均): ${fmt1(st.diaAvg)}</span>
+    <span>上(最小/最大): ${fmt0(st.sysMin)} / ${fmt0(st.sysMax)}</span>
+    <span>下(最小/最大): ${fmt0(st.diaMin)} / ${fmt0(st.diaMax)}</span>
+    ${st.pulseCount > 0 ? `<span>脈拍(平均): ${fmt1(st.pulseAvg)}</span>` : ""}
+  `;
+
+  const m = st.byTime.morning;
+  const n = st.byTime.night;
+  detail.style.display = "block";
+  detail.innerHTML = [
+    `【朝】${m.count}件  上: ${fmt1(m.sysAvg)} / 下: ${fmt1(m.diaAvg)}`,
+    `【夜】${n.count}件  上: ${fmt1(n.sysAvg)} / 下: ${fmt1(n.diaAvg)}`
+  ].join("\n");
+}
+
+/** =========================================================
+ *  一覧描画
+ * ========================================================= */
+function renderList(items) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (!items || items.length === 0) {
+    list.innerHTML = `<div class="item">まだ記録がありません。</div>`;
+    return;
+  }
+
+  // 新しい順
+  items.sort((a,b) => (a.dt < b.dt ? 1 : -1));
+
+  for (const it of items) {
+    const div = document.createElement("div");
+    div.className = "item";
+
+    const bpText = `${it.sys}/${it.dia}`;
+    const metaPulse = (it.pulse !== null && !Number.isNaN(it.pulse)) ? `脈拍: ${it.pulse}` : null;
+
+    div.innerHTML = `
+      <div class="top">
+        <div>
+          <div class="bp">${bpText}</div>
+          <div class="dt">${formatJP(it.dt)}</div>
+        </div>
+        <button class="smallbtn" data-del="${it.id}">削除</button>
+      </div>
+      <div class="meta">
+        ${metaPulse ? `<span>${metaPulse}</span>` : ""}
+        <span>ID: ${it.id}</span>
+      </div>
+      ${it.note ? `<div class="note">${escapeHtml(it.note)}</div>` : ""}
+    `;
+    list.appendChild(div);
+  }
+
+  list.querySelectorAll("[data-del]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.getAttribute("data-del"));
+      await deleteReading(id);
+      setStatus(`ID ${id} を削除しました`);
+      await loadAndRender();
+    });
+  });
+}
+
+/** =========================================================
+ *  エクスポート / インポート（バックアップ）
+ * ========================================================= */
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toCSV(items) {
+  const header = ["id","dt","sys","dia","pulse","note"];
+  const lines = [header.join(",")];
+
+  for (const it of items) {
+    const row = [
+      it.id ?? "",
+      it.dt ?? "",
+      it.sys ?? "",
+      it.dia ?? "",
+      (it.pulse === null || Number.isNaN(it.pulse)) ? "" : it.pulse,
+      (it.note ?? "").replaceAll('"','""')
+    ];
+    row[5] = `"${row[5].replaceAll("\n","\\n")}"`;
+    lines.push(row.join(","));
+  }
+  return lines.join("\n");
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  const header = lines[0].split(",").map(s => s.trim());
+  const idx = Object.fromEntries(header.map((h,i)=>[h,i]));
+
+  const out = [];
+  for (let i=1; i<lines.length; i++) {
+    const line = lines[i];
+    const parts = line.split(",");
+
+    const dt = parts[idx.dt];
+    const sys = Number(parts[idx.sys]);
+    const dia = Number(parts[idx.dia]);
+    const pulseRaw = parts[idx.pulse];
+    const pulse = pulseRaw === "" ? null : Number(pulseRaw);
+
+    const m = line.match(/,"(.*)"$/);
+    let note = m ? m[1] : "";
+    note = note.replaceAll('""','"').replaceAll("\\n","\n");
+
+    if (!dt || !sys || !dia) continue;
+    out.push({ dt, sys, dia, pulse, note, createdAt: Date.now() });
+  }
+  return out;
+}
+
+/** =========================================================
+ *  まとめて更新（統計/カレンダー/フィルター/一覧）
+ * ========================================================= */
+async function loadAndRender() {
+  const items = await getAllReadings();
+
+  // 全体は全件で表示
+  renderStats(items);
+  renderCalendar(items);
+
+  // 一覧は当日フィルターがあれば適用
+  const view = applyDayFilter(items);
+  updateDayFilterBar(view.length, items.length);
+  renderDayStats(view);
+  renderList(view);
+}
+
+/** =========================================================
+ *  イベント
+ * ========================================================= */
+document.getElementById("saveBtn").addEventListener("click", async () => {
+  try {
+    const reading = readForm();
+    const id = await addReading(reading);
+    setStatus(`保存しました（ID: ${id}）`);
+    resetFormKeepDate();
+    await loadAndRender();
+  } catch (e) {
+    setStatus(e.message || "保存に失敗しました", true);
+  }
+});
+
+document.getElementById("reloadBtn").addEventListener("click", async () => {
+  await loadAndRender();
+  setStatus("再読み込みしました");
+});
+
+document.getElementById("clearBtn").addEventListener("click", async () => {
+  if (!confirm("全ての記録を削除します。よろしいですか？")) return;
+  await clearAll();
+  setStatus("全削除しました");
+  selectedDayKey = null;
+  await loadAndRender();
+});
+
+document.getElementById("exportCsvBtn").addEventListener("click", async () => {
+  const items = await getAllReadings();
+  const csv = toCSV(items);
+  const stamp = new Date().toISOString().slice(0,10);
+  downloadText(`blood_pressure_${stamp}.csv`, csv);
+  setStatus("CSVを書き出しました（ダウンロード）");
+});
+
+document.getElementById("exportJsonBtn").addEventListener("click", async () => {
+  const items = await getAllReadings();
+  const stamp = new Date().toISOString().slice(0,10);
+  downloadText(`blood_pressure_${stamp}.json`, JSON.stringify(items, null, 2));
+  setStatus("JSONを書き出しました（ダウンロード）");
+});
+
+document.getElementById("importCsvInput").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  const text = await file.text();
+  const rows = parseCSV(text);
+  if (rows.length === 0) {
+    setStatus("CSVを読み込めませんでした（形式を確認してください）", true);
+    return;
+  }
+
+  for (const r of rows) await addReading(r);
+  await loadAndRender();
+  setStatus(`CSVから ${rows.length} 件インポートしました`);
+  e.target.value = "";
+});
+
+/** =========================================================
+ *  init
+ * ========================================================= */
+async function init() {
+  document.getElementById("dt").value = toLocalDatetimeValue(new Date());
+
+  try {
+    await openDB();
+    setupCalendarButtons();
+
+    // 当日フィルター解除ボタン
+    const clearBtn = document.getElementById("dayFilterClear");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", async () => {
+        selectedDayKey = null;
+        await loadAndRender();
+        setStatus("当日フィルターを解除しました");
+      });
+    }
+
+    setStatus("DBを開きました。保存すると端末内に残ります。");
+    await loadAndRender();
+  } catch (e) {
+    console.error(e);
+    setStatus("IndexedDBが使えません。この環境では保存できない可能性があります。", true);
+  }
+}
+
+init();
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js');
+  });
+}
+</script>
+</body>
+</html>
